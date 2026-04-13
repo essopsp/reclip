@@ -162,7 +162,21 @@ def download_file(job_id):
     job = jobs.get(job_id)
     if not job or job["status"] != "done":
         return jsonify({"error": "File not ready"}), 404
-    return send_file(job["file"], as_attachment=True, download_name=job["filename"])
+
+    file_path = job["file"]
+
+    @request.after_this_request
+    def remove_file(response):
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            if job_id in jobs:
+                del jobs[job_id]
+        except Exception as e:
+            app.logger.error(f"Error deleting file or job: {e}")
+        return response
+
+    return send_file(file_path, as_attachment=True, download_name=job["filename"])
 
 
 if __name__ == "__main__":
