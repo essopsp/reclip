@@ -124,6 +124,17 @@ def get_info():
         return jsonify({"error": str(e)}), 400
 
 
+def create_job(url, format_choice="video", format_id=None, title=""):
+    job_id = uuid.uuid4().hex[:10]
+    jobs[job_id] = {"status": "downloading", "url": url, "title": title}
+
+    thread = threading.Thread(target=run_download, args=(job_id, url, format_choice, format_id))
+    thread.daemon = True
+    thread.start()
+
+    return job_id
+
+
 @app.route("/api/download", methods=["POST"])
 def start_download():
     data = request.json
@@ -135,12 +146,7 @@ def start_download():
     if not url:
         return jsonify({"error": "No URL provided"}), 400
 
-    job_id = uuid.uuid4().hex[:10]
-    jobs[job_id] = {"status": "downloading", "url": url, "title": title}
-
-    thread = threading.Thread(target=run_download, args=(job_id, url, format_choice, format_id))
-    thread.daemon = True
-    thread.start()
+    job_id = create_job(url, format_choice, format_id, title)
 
     return jsonify({"job_id": job_id})
 
@@ -163,6 +169,92 @@ def download_file(job_id):
     if not job or job["status"] != "done":
         return jsonify({"error": "File not ready"}), 404
     return send_file(job["file"], as_attachment=True, download_name=job["filename"])
+
+
+# =========================
+# External Public API
+# =========================
+
+@app.route('/external/download', methods=['POST'])
+def external_download():
+    data = request.get_json()
+
+    if not data or 'url' not in data:
+        return jsonify({
+            "success": False,
+            "error": "Missing 'url'"
+        }), 400
+
+    url = data['url']
+    format_type = data.get('format', 'mp4')
+
+    try:
+        # In the refactored app, create_job is available
+        # External API uses 'format' as 'video' or 'audio' in our internal logic
+        # but the user might pass 'mp4', 'mp3' etc.
+        # We'll map it simply for now or use it as is if compatible.
+
+        internal_format = "audio" if format_type == "mp3" else "video"
+        job_id = create_job(url, format_choice=internal_format)
+
+        return jsonify({
+            "success": True,
+            "job_id": job_id,
+            "status_url": f"/external/status/{job_id}",
+            "download_url": f"/external/file/{job_id}"
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route('/external/status/<job_id>', methods=['GET'])
+def external_status(job_id):
+    job = jobs.get(job_id)
+
+    if not job:
+        return jsonify({
+            "success": False,
+            "error": "Job not found"
+        }), 404
+
+    return jsonify({
+        "success": True,
+        "status": job.get("status"),
+        "progress": job.get("progress", 0), # note: run_download doesn't currently update progress
+        "filename": job.get("filename"),
+        "download_ready": job.get("status") == "done"
+    })
+
+
+@app.route('/external/file/<job_id>', methods=['GET'])
+def external_file(job_id):
+    job = jobs.get(job_id)
+
+    if not job:
+        return jsonify({
+            "success": False,
+            "error": "Job not found"
+        }), 404
+
+    if job.get("status") != "done":
+        return jsonify({
+            "success": False,
+            "error": "File not ready"
+        }), 400
+
+    file_path = job.get("file")
+
+    if not file_path or not os.path.exists(file_path):
+        return jsonify({
+            "success": False,
+            "error": "File missing"
+        }), 404
+
+    return send_file(file_path, as_attachment=True, download_name=job.get("filename"))
 
 
 if __name__ == "__main__":
